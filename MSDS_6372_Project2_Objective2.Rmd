@@ -1,0 +1,162 @@
+---
+title: "Obj2"
+author: "Jason Mcdonald"
+date: "7/31/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective 2
+#### Slightly more complex model with interaction terms
+age:priorfrac - P Value = .390 (exclude from model)
+priorfracno:momfracyes - P Value = 3.18e-06
+momfracyes:armassistyes - P Value = .408
+```{r}
+# fit the model on the training set
+model.complex <- train(
+  form=fracture~priorfrac+age+momfrac+armassist+raterisk+height+priorfrac:momfrac+momfrac:armassist,
+  data=train_rose,
+  #trControl=trainControl(method = "repeatedcv", number=5, repeats=5, classProbs = TRUE, savePredictions='final'), #uncomment to use the threshold optimizing function below
+  trControl=trainControl(method = "repeatedcv", number=5, repeats=5),
+  method="glm",
+  family="binomial")
+
+summary(model.complex)
+
+
+
+# predict the probability results on the testing set
+model.complex.preds.probs <- 
+  predict(model.complex, newdata=test_df, type='prob')
+
+# use threshold to turn probability into response
+model.complex.preds.class <- factor(
+  ifelse(model.complex.preds.probs['Yes'] > 0.5, 'Yes', 'No'))
+
+# combine prediction results with test set
+model.complex.preds <- cbind(
+  test_df,
+  predicted.Class=model.complex.preds.class,
+  probability=model.complex.preds.probs) %>% mutate(dataset='test')
+
+# model summary results
+# summary(log.intuition.fit)$coefficients
+data.frame(
+  unclass(summary(model.complex)$coefficients), 
+  check.names=F, 
+  stringsAsFactors=F)
+
+# variable importance
+varImp(model.complex$finalModel)
+summary(test_df)
+# confusion matrix
+cm <- caret::confusionMatrix(test_df$fracture, model.complex.preds.class, positive="No")
+cm$table
+# accuracy: the number of correct predictions divided by the total number of 
+# observations
+accuracy <- cm$overall['Accuracy']
+
+# sensitivity / recall / true positive rate: the number of correct positive
+# values ("Yes") divided by the number of total positives
+recall <- cm$byClass['Sensitivity']
+
+# specificity / true negative rate: the number of correct negative
+# values ("No") divided by the number of total negatives
+specificity <- cm$byClass['Specificity']
+
+# precision / positive prediction value: the number of correct positive values
+# ("Yes") divided by the number of predicted positives
+precision <- cm$byClass['Pos Pred Value']
+
+# f-score: a measure of accuracy calculated from the harmonic mean of precision
+# and recall
+f_score <- 2 * ((precision * recall) / (precision + recall))
+
+# print scoring metrics
+paste('Accuracy:', round(accuracy, 2))
+paste('Recall / Sensitivity:', round(recall, 2))
+paste('Specificity:', round(specificity, 2))
+paste('Precision:', round(precision, 2))
+paste('F-Score:', round(f_score, 2))
+
+# AUROC
+model.complex.preds %>%
+  yardstick::roc_auc(truth=fracture, probability.No)
+
+# ROC curve
+model.complex.preds %>%
+  group_by(dataset) %>%
+  roc_auc(truth=fracture, probability.No)
+
+typeof(model.complex.preds.probs)
+
+typeof(test_df$fracture)
+
+ROCR.pred <- ROCR::prediction(model.complex.preds.probs['Yes'], test_df$fracture)
+ROCR.full <- ROCR::performance(ROCR.pred, 'tpr', 'fpr')
+plot(ROCR.full, colorize=F, text.adj=c(-0.2, 1.7))
+```
+#### Using a random forest model
+
+```{r Random Forest Model}
+
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search="random",summaryFunction = twoClassSummary)
+mtry <- sqrt(ncol(train_rose))
+#starter model for RF
+#rfModel <- train(fracture~age+momfrac+armassist+raterisk+height, data=train_rose, method="rf", trainControl=control, tuneLength=15)
+#model for RF
+rfModel <- train(fracture~priorfrac+age+momfrac+armassist+raterisk+height+priorfrac:momfrac+momfrac:armassist, data=train_rose, method="rf", trainControl=control, tuneLength=7)
+
+print(rfModel)
+plot(rfModel)
+```
+#### Predict on RF Model
+```{r Predict Random Forest Model}
+rfpred <- predict(rfModel, test_df, type="prob")
+rfpred.class <- factor(
+  ifelse(rfpred['Yes'] > 0.5, 'Yes', 'No'))
+#rfpredictions$observed <- test_df$fracture
+#rfpredictions
+rfcm <- confusionMatrix(test_df$fracture, rfpred.class)
+rfcm
+#roc(rfpredictions$observed, rfpredictions$No)
+```
+
+
+#### Predict on RF Model
+```{r Predict Random Forest Model 2}
+rfpredictions <- as.data.frame(predict(rfModel, test_df, type="prob"))
+rfpredictions$predict <- names(rfpredictions)[1:2][apply(rfpredictions[,1:2], 1, which.max)]
+rfpredictions$observed <- test_df$fracture
+#rfpredictions
+
+roc(rfpredictions$observed, rfpredictions$No)
+```
+
+#### Using KNN to create a non parametric model
+
+
+```{r NonParametric Model using KNN}
+knnControl <- trainControl(method="repeatedcv",repeats = 3,classProbs=TRUE,summaryFunction = twoClassSummary)
+model.knn <- train(fracture~., data = train_rose, method = "knn", trControl = knnControl, preProcess = c("center","scale"), tuneLength = 20)
+plot(model.knn)
+```
+```{r}
+# predict the probability results on the testing set
+model.knn.pred <- 
+  predict(model.knn, newdata=test_df)
+
+
+
+```
+
+```{r}
+# model summary results
+confusionMatrix(model.knn.pred, test_df$fracture)
+
+# AUROC
+#model.knn.pred %>% yardstick::roc_auc(truth=fracture, "No")
+```

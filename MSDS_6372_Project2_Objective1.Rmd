@@ -1,0 +1,778 @@
+---
+title: "MSDS 6372 Project 2"
+author: "Robert Price"
+date: "7/28/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Install Packages
+
+```{r, warning=FALSE, message=FALSE}
+library(aplore3)
+library(dplyr)
+library(forcats)
+library(ggplot2)
+library(GGally)
+library(naniar)
+library(caret)
+library(MASS)
+library(yardstick)
+library(ROCR)
+library(ROSE)
+library(car)
+```
+
+## Set Constants 
+
+These constants are used throughout the analysis.
+
+```{r}
+# custom color palette
+PALETTE <- c(
+  "#5095c3",  # blue
+  "#c95d51",  # red
+  "#f39c12"   # orange
+)
+```
+
+## Create a Copy of GLOW Bonemed Dataset
+
+```{r}
+gbm <- glow_bonemed
+```
+
+## Collapse Rate Risk Levels "Same" and "Less" into A Factor 
+
+```{r}
+# collapse rate risk from three levels to two levels
+gbm$raterisk <- gbm$raterisk %>% fct_collapse(Less=c("Less", "Same"))
+```
+
+#### Remove Irrelevant Features
+
+```{r}
+# create array of columns to remove from analysis 
+to_remove <- c(
+  'sub_id',
+  'site_id',
+  'phy_id' 
+)
+
+# remove irrelevant features
+gbm_clean <- gbm %>% dplyr::select(-all_of(to_remove))
+```
+
+#### Print First Rows of Dataset
+
+```{r}
+head(gbm_clean)
+```
+
+#### Exploring Unbalanced Dataset
+
+```{r}
+# calculate counts and percentages of fracture
+g_fracture <- gbm_clean %>% 
+  group_by(fracture) %>% 
+  summarise(percent=n()/nrow(.), count=n())
+
+# plot an overview of the response variable4
+g_fracture %>% ggplot(aes(x=fracture, y=percent)) +  
+  geom_bar(stat='identity', aes(fill=fracture), show.legend=F) +
+  geom_text(
+    aes(label=as.character(paste0("n = ", count))), 
+    size=3, 
+    color='white',
+    position=position_stack(vjust=0.5)) +
+  scale_fill_manual(values=PALETTE) +
+  labs(
+    title="Overview of Response Variable 'Fracture'",
+    x="",
+    y="Percentage"
+  )
+```
+#### Correlations of Variables
+
+```{r}
+# simple correlation matrix 
+glow_bonemed %>% 
+  dplyr::select(c('age', 'weight', 'height', 'bmi', 'fracscore')) %>% 
+  ggcorr(low=PALETTE[[1]], mid='white', high=PALETTE[[2]], label=T, color='grey50')
+```
+#### Fractures by Prior Fractures
+
+```{r}
+# calculate proportions as percentages and save to new variable
+g1 <- glow_bonemed %>% 
+  group_by(priorfrac, fracture) %>%
+  summarise(cnt=n()) %>%
+  mutate(perc=round(cnt/sum(cnt), 4)) %>%
+  arrange(desc(perc))
+
+g1
+
+# use calculated proportions to plot fractures
+g1[c(3,4),] %>% ggplot(aes(x=reorder(priorfrac,-perc), y=perc))+
+  geom_bar(aes(fill=priorfrac),show.legend=F,stat="identity") +
+  scale_fill_manual(values=PALETTE) +
+  labs(
+    title="Proportion of Fractures withing First Year",
+    x="History of Prior Fracture",
+    y="Proportion"
+  )
+```
+
+#### Split the Data into Training and Testing Sets
+
+```{r}
+# set the seed
+set.seed(1337)
+idx <- createDataPartition(gbm_clean$fracture, p=0.70, list=F)
+train_df <- gbm_clean[idx,]
+test_df <- gbm_clean[-idx,]
+```
+
+```{r}
+nrow(train_df)
+nrow(test_df)
+
+test_df %>% 
+  group_by(fracture) %>%
+  summarise(percent=n()/nrow(.), count=n())
+```
+
+#### Add up sampling training set to account for unbalanced response 
+
+```{r}
+# up sampling
+train_upsample <- upSample(x=train_df[,-ncol(train_df)], y=train_df$fracture)
+summary(train_upsample)
+```
+
+#### Add ROSE training set to account for unbalanced response
+
+```{r}
+# create synthetic data points with ROSE
+train_rose <-ROSE(fracture~.,data=train_df)$data
+summary(train_rose)
+```
+```{r}
+nrow(train_rose) 
+
+train_rose %>% 
+  group_by(fracture) %>%
+  summarise(percent=n()/nrow(.), count=n())
+```
+
+
+#### Create a Train Control to use in models
+
+```{r}
+ctrl <- trainControl(
+  method="repeatedcv",
+  number=5,
+  repeats=5)
+```
+
+#### Fit a simple intuition logistic regression model using GLM
+
+```{r}
+# fit the model on the training set
+# log.intuition.fit <- train(
+#   form=fracture~age+weight+priorfrac+premeno+raterisk,  # 0.2421089
+#   data=train_df, 
+#   trControl=ctrl,
+#   method="glm", 
+#   family="binomial")
+# summary(log.intuition.fit)
+```
+
+## Model Creation
+
+### Forward Feature Selection
+
+#### Model Fit
+
+```{r}
+# fit the model on the training set
+ log.forward.fit <- train(
+   form=fracture~.,  
+   data=train_rose, 
+   trControl=ctrl,
+   method="glmStepAIC", 
+   direction="forward",
+   family="binomial",
+   trace=F)
+
+# print the summary statistics for the model
+summary(log.forward.fit)
+```
+
+#### Model Prediction
+
+```{r}
+# predict the probability results on the testing set
+log.forward.preds.probs <- 
+  predict(log.forward.fit, newdata=test_df, type='prob')
+
+# use threshold to turn probability into response
+log.forward.preds.class <- factor(
+  ifelse(log.forward.preds.probs['Yes'] > 0.5, 'Yes', 'No'))
+
+# combine prediction results with test set
+log.forward.preds <- cbind(
+  test_df,
+  predicted.Class=log.forward.preds.class,
+  probability=log.forward.preds.probs) %>% mutate(dataset='forward')
+```
+
+#### Model Coefficients as DataFrame
+
+```{r}
+# print the 
+data.frame(
+  unclass(summary(log.forward.fit)$coefficients), 
+  check.names=F, 
+  stringsAsFactors=F)
+```
+#### Relative Variable Importance
+
+```{r}
+# variable importance
+varImp(log.forward.fit$finalModel)
+```
+#### Calculate VIF Values for Multicollinearity
+
+```{r}
+# VIF values
+car::vif(log.forward.fit$finalModel)
+```
+#### Create Confusion Matrix
+
+```{r}
+# confusion matrix
+cm <- caret::confusionMatrix(test_df$fracture, log.forward.preds.class)
+```
+
+#### Calculate Metrics
+
+```{r}
+
+# accuracy: the number of correct predictions divided by the total number of 
+# observations
+accuracy <- cm$overall['Accuracy']
+
+# sensitivity / recall / true positive rate: the number of correct positive
+# values ("Yes") divided by the number of total positives
+recall <- cm$byClass['Sensitivity']
+
+# specificity / true negative rate: the number of correct negative
+# values ("No") divided by the number of total negatives
+specificity <- cm$byClass['Specificity']
+
+# precision / positive prediction value: the number of correct positive values
+# ("Yes") divided by the number of predicted positives
+precision <- cm$byClass['Pos Pred Value']
+
+# f-score: a measure of accuracy calculated from the harmonic mean of precision
+# and recall
+f_score <- 2 * ((precision * recall) / (precision + recall))
+
+# print scoring metrics
+paste('Accuracy:', round(accuracy, 3))
+paste('Recall / Sensitivity:', round(recall, 3))
+paste('Specificity:', round(specificity, 3))
+paste('Precision:', round(precision, 3))
+paste('F-Score:', round(f_score, 3))
+
+# AUROC
+log.forward.preds %>%
+  yardstick::roc_auc(truth=fracture, probability.No)
+
+# ROC Curve
+ROCR.pred <- ROCR::prediction(log.forward.preds.probs['Yes'], test_df$fracture)
+ROCR.full <- ROCR::performance(ROCR.pred, 'tpr', 'fpr')
+plot(ROCR.full, colorize=F, text.adj=c(-0.2, 1.7))
+```
+
+
+### Backward Feature Selection
+
+#### Model Fit
+
+```{r}
+# fit the model on the training set
+ log.backward.fit <- train(
+   form=fracture~.,  
+   data=train_rose, 
+   trControl=ctrl,
+   method="glmStepAIC", 
+   direction="backward",
+   family="binomial",
+   trace=F)
+
+# print the summary statistics for the model
+summary(log.backward.fit)
+```
+
+#### Model Prediction
+
+```{r}
+# predict the probability results on the testing set
+log.backward.preds.probs <- 
+  predict(log.backward.fit, newdata=test_df, type='prob')
+
+# use threshold to turn probability into response
+log.backward.preds.class <- factor(
+  ifelse(log.backward.preds.probs['Yes'] > 0.5, 'Yes', 'No'))
+
+# combine prediction results with test set
+log.backward.preds <- cbind(
+  test_df,
+  predicted.Class=log.backward.preds.class,
+  probability=log.backward.preds.probs) %>% mutate(dataset='backward')
+```
+
+#### Model Coefficients as DataFrame
+
+```{r}
+# print the 
+data.frame(
+  unclass(summary(log.backward.fit)$coefficients), 
+  check.names=F, 
+  stringsAsFactors=F)
+```
+#### Relative Variable Importance
+
+```{r}
+# variable importance
+varImp(log.backward.fit$finalModel)
+```
+
+#### Calculate VIF Values for Multicollinearity
+
+```{r}
+# VIF values
+car::vif(log.backward.fit$finalModel)
+```
+#### Create Confusion Matrix
+
+```{r}
+# confusion matrix
+cm <- caret::confusionMatrix(test_df$fracture, log.backward.preds.class)
+```
+
+#### Calculate Metrics
+
+```{r}
+
+# accuracy: the number of correct predictions divided by the total number of 
+# observations
+accuracy <- cm$overall['Accuracy']
+
+# sensitivity / recall / true positive rate: the number of correct positive
+# values ("Yes") divided by the number of total positives
+recall <- cm$byClass['Sensitivity']
+
+# specificity / true negative rate: the number of correct negative
+# values ("No") divided by the number of total negatives
+specificity <- cm$byClass['Specificity']
+
+# precision / positive prediction value: the number of correct positive values
+# ("Yes") divided by the number of predicted positives
+precision <- cm$byClass['Pos Pred Value']
+
+# f-score: a measure of accuracy calculated from the harmonic mean of precision
+# and recall
+f_score <- 2 * ((precision * recall) / (precision + recall))
+
+# print scoring metrics
+paste('Accuracy:', round(accuracy, 3))
+paste('Recall / Sensitivity:', round(recall, 3))
+paste('Specificity:', round(specificity, 3))
+paste('Precision:', round(precision, 3))
+paste('F-Score:', round(f_score, 3))
+
+# AUROC
+log.backward.preds %>%
+  yardstick::roc_auc(truth=fracture, probability.No)
+
+# ROC Curve
+ROCR.pred <- ROCR::prediction(log.backward.preds.probs['Yes'], test_df$fracture)
+ROCR.full <- ROCR::performance(ROCR.pred, 'tpr', 'fpr')
+plot(ROCR.full, colorize=F, text.adj=c(-0.2, 1.7))
+```
+
+
+
+#### Chi-Sq Test
+
+```{r}
+# vif(lm(fracture~priorfrac+momfrac+raterisk+fracscore+bonemed+bonetreat, data=train_rose))
+# chisq.test(glow_clean$bonemed, glow_clean$bonemed_fu, correct=FALSE)
+# chisq.test(glow_clean$bonemed, glow_clean$bonetreat, correct=FALSE)
+# chisq.test(glow_clean$bonetreat, glow_clean$bonemed_fu, correct=FALSE)
+```
+
+#### Fit a simple logistic regression model from anova results using GLM
+```{r}
+log.intuition.fit <- train(
+  form=fracture~age+height+armassist+raterisk+bonemed+bonemed_fu,
+  data=train_rose, 
+  trControl=trainControl(method = "repeatedcv", number=5, repeats=5),
+  method="glm", 
+  family="binomial")
+
+summary(log.intuition.fit)
+```
+
+
+
+```{r}
+# predict the probability results on the testing set
+log.intuition.preds.probs <- 
+  predict(log.intuition.fit, newdata=test_df, type='prob')
+
+# use threshold to turn probability into response
+log.intuition.preds.class <- factor(
+  ifelse(log.intuition.preds.probs['Yes'] > 0.50, 'Yes', 'No'))
+
+# combine prediction results with test set
+log.intuition.preds <- cbind(
+  test_df,
+  predicted.Class=log.intuition.preds.class,
+  probability=log.intuition.preds.probs) %>% mutate(dataset='test')
+```
+
+
+#### Create Confusion Matrix
+
+```{r}
+# confusion matrix
+cm <- caret::confusionMatrix(test_df$fracture, log.intuition.preds.class)
+```
+
+#### Calculate Metrics
+
+```{r}
+
+# accuracy: the number of correct predictions divided by the total number of 
+# observations
+accuracy <- cm$overall['Accuracy']
+
+# sensitivity / recall / true positive rate: the number of correct positive
+# values ("Yes") divided by the number of total positives
+recall <- cm$byClass['Sensitivity']
+
+# specificity / true negative rate: the number of correct negative
+# values ("No") divided by the number of total negatives
+specificity <- cm$byClass['Specificity']
+
+# precision / positive prediction value: the number of correct positive values
+# ("Yes") divided by the number of predicted positives
+precision <- cm$byClass['Pos Pred Value']
+
+# f-score: a measure of accuracy calculated from the harmonic mean of precision
+# and recall
+f_score <- 2 * ((precision * recall) / (precision + recall))
+
+# print scoring metrics
+paste('Accuracy:', round(accuracy, 3))
+paste('Recall / Sensitivity:', round(recall, 3))
+paste('Specificity:', round(specificity, 3))
+paste('Precision:', round(precision, 3))
+paste('F-Score:', round(f_score, 3))
+
+# AUROC
+log.intuition.preds %>%
+  yardstick::roc_auc(truth=fracture, probability.No)
+
+# ROC Curve
+ROCR.pred <- ROCR::prediction(log.intuition.preds.probs['Yes'], test_df$fracture)
+ROCR.full <- ROCR::performance(ROCR.pred, 'tpr', 'fpr')
+plot(ROCR.full, colorize=F, text.adj=c(-0.2, 1.7))
+```
+    
+
+#### Fit a combined feature selection model using GLM
+
+```{r}
+
+log.combine.fit <- train(
+  # form=fracture~priorfrac+age+momfrac+armassist+raterisk+height+bonemed,
+  form=fracture~priorfrac+age+momfrac+armassist+raterisk+height,
+  data=train_rose, 
+  trControl=ctrl,
+  method="glm", 
+  family="binomial")
+summary(log.combine.fit)
+
+#vif(lm(fracture~priorfrac+momfrac+raterisk+fracscore+bonemed+bonetreat, data=train_rose))
+# chisq.test(glow_clean$bonemed, glow_clean$bonemed_fu, correct=FALSE)
+# chisq.test(glow_clean$bonemed, glow_clean$bonetreat, correct=FALSE)
+# chisq.test(glow_clean$bonetreat, glow_clean$bonemed_fu, correct=FALSE)
+
+# predict the probability results on the testing set
+log.combine.preds.probs <- 
+  predict(log.combine.fit, newdata=test_df, type='prob')
+
+# use threshold to turn probability into response
+log.combine.preds.class <- factor(
+  ifelse(log.combine.preds.probs['Yes'] > 0.50, 'Yes', 'No'))
+
+# combine prediction results with test set
+log.combine.preds <- cbind(
+  test_df,
+  predicted.Class=log.combine.preds.class,
+  probability=log.combine.preds.probs) %>% mutate(dataset='test')
+
+data.frame(
+  unclass(summary(log.combine.fit)$coefficients), 
+  check.names=F, 
+  stringsAsFactors=F)
+
+# variable importance
+varImp(log.combine.fit$finalModel)
+summary(log.combine.fit$finalModel)
+
+# confusion matrix
+cm <- caret::confusionMatrix(test_df$fracture, log.combine.preds.class, positive="No")
+cm$table
+# accuracy: the number of correct predictions divided by the total number of 
+# observations
+accuracy <- cm$overall['Accuracy']
+
+# sensitivity / recall / true positive rate: the number of correct positive
+# values ("Yes") divided by the number of total positives
+recall <- cm$byClass['Sensitivity']
+
+# specificity / true negative rate: the number of correct negative
+# values ("No") divided by the number of total negatives
+specificity <- cm$byClass['Specificity']
+
+# precision / positive prediction value: the number of correct positive values
+# ("Yes") divided by the number of predicted positives
+precision <- cm$byClass['Pos Pred Value']
+
+# f-score: a measure of accuracy calculated from the harmonic mean of precision
+# and recall
+f_score <- 2 * ((precision * recall) / (precision + recall))
+
+# print scoring metrics
+paste('Accuracy:', round(accuracy, 3))
+paste('Recall / Sensitivity:', round(recall, 3))
+paste('Specificity:', round(specificity, 3))
+paste('Precision:', round(precision, 3))
+paste('F-Score:', round(f_score, 3))
+
+# AUROC
+log.combine.preds %>%
+  yardstick::roc_auc(truth=fracture, probability.No)
+
+# ROC curve
+log.combine.preds %>%
+  group_by(dataset) %>%
+  roc_auc(truth=fracture, probability.No)
+
+typeof(log.combine.preds.probs)
+
+typeof(test_df$fracture)
+
+ROCR.pred <- ROCR::prediction(log.combine.preds.probs['Yes'], test_df$fracture)
+ROCR.full <- ROCR::performance(ROCR.pred, 'tpr', 'fpr')
+plot(ROCR.full, colorize=F, text.adj=c(-0.2, 1.7))
+```
+
+```{r}
+exp(cbind("Odds ratio" = coef(log.combine.fit), confint.default(log.combine.fit, level = 0.95)))
+```
+
+```{r}
+glm.combine.fit <- glm(
+  fracture~priorfrac+age+momfrac+armassist+raterisk+height,
+  family="binomial",
+  data=train_rose
+)
+
+cooksD <- cooks.distance(glm.combine.fit)
+
+par(mfrow = c(2, 2))
+plot(glm.combine.fit)
+
+influential <- cooksD[(cooksD > (3 * mean(cooksD, na.rm = TRUE)))]
+influential
+
+
+```
+
+```{r}
+exp(cbind("Odds ratio" = coef(glm.combine.fit), confint.default(glm.combine.fit, level = 0.95)))
+
+```
+
+```{r}
+influential_points <- names(influential)
+train_rose[influential_points,]
+# names_of_influential <- names(influential)
+```
+
+#### Show Summary Results 
+
+```{r}
+# model summary results
+# summary(log.intuition.fit)$coefficients
+data.frame(
+  unclass(summary(log.intuition.fit)$coefficients), 
+  check.names=F, 
+  stringsAsFactors=F)
+
+# variable importance
+varImp(log.intuition.fit$finalModel)
+
+# confusion matrix
+cm <- caret::confusionMatrix(test_df$fracture, log.intuition.preds.class, positive="No")
+cm$table
+# accuracy: the number of correct predictions divided by the total number of 
+# observations
+accuracy <- cm$overall['Accuracy']
+
+# sensitivity / recall / true positive rate: the number of correct positive
+# values ("Yes") divided by the number of total positives
+recall <- cm$byClass['Sensitivity']
+
+# specificity / true negative rate: the number of correct negative
+# values ("No") divided by the number of total negatives
+specificity <- cm$byClass['Specificity']
+
+# precision / positive prediction value: the number of correct positive values
+# ("Yes") divided by the number of predicted positives
+precision <- cm$byClass['Pos Pred Value']
+
+# f-score: a measure of accuracy calculated from the harmonic mean of precision
+# and recall
+f_score <- 2 * ((precision * recall) / (precision + recall))
+
+# print scoring metrics
+paste('Accuracy:', round(accuracy, 2))
+paste('Recall / Sensitivity:', round(recall, 2))
+paste('Specificity:', round(specificity, 2))
+paste('Precision:', round(precision, 2))
+paste('F-Score:', round(f_score, 2))
+
+# AUROC
+log.intuition.preds %>%
+  yardstick::roc_auc(truth=fracture, probability.No)
+
+# ROC curve
+log.intuition.preds %>%
+  group_by(dataset) %>%
+  roc_auc(truth=fracture, probability.No)
+
+typeof(log.intuition.preds.probs)
+
+typeof(test_df$fracture)
+
+ROCR.pred <- ROCR::prediction(log.intuition.preds.probs['Yes'], test_df$fracture)
+ROCR.full <- ROCR::performance(ROCR.pred, 'tpr', 'fpr')
+plot(ROCR.full, colorize=F, text.adj=c(-0.2, 1.7))
+```
+
+
+
+
+#### Transform the Coefficients from log-odds to odds
+
+```{r}
+exp(coef(logit.fit$finalModel))
+```
+
+
+## Objective 2
+
+#### Intuition Model with Interaction Terms
+
+age:priorfrac - P Value = .390 (exclude from model)
+priorfracno:momfracyes - P Value = 3.18e-06
+momfracyes:armassistyes - P Value = .408
+
+```{r}
+# fit the model on the training set
+log.interaction.fit <- train(
+  form=fracture~priorfrac+age+momfrac+armassist+raterisk+height+priorfrac:momfrac+momfrac:armassist,
+  data=train_rose,
+  trControl=ctrl,
+  method="glm",
+  family="binomial")
+
+summary(log.interaction.fit)
+
+# predict the probability results on the testing set
+log.interaction.preds.probs <- 
+  predict(log.interaction.fit, newdata=test_df, type='prob')
+
+# use threshold to turn probability into response
+log.interaction.preds.class <- factor(
+  ifelse(log.interaction.preds.probs['Yes'] > 0.50, 'Yes', 'No'))
+
+# combine prediction results with test set
+log.interaction.preds <- cbind(
+  test_df,
+  predicted.Class=log.interaction.preds.class,
+  probability=log.interaction.preds.probs) %>% mutate(dataset='test')
+
+data.frame(
+  unclass(summary(log.interaction.fit)$coefficients), 
+  check.names=F, 
+  stringsAsFactors=F)
+
+# confusion matrix
+cm <- caret::confusionMatrix(test_df$fracture, log.interaction.preds.class, positive="No")
+cm$table
+# accuracy: the number of correct predictions divided by the total number of 
+# observations
+accuracy <- cm$overall['Accuracy']
+
+# sensitivity / recall / true positive rate: the number of correct positive
+# values ("Yes") divided by the number of total positives
+recall <- cm$byClass['Sensitivity']
+
+# specificity / true negative rate: the number of correct negative
+# values ("No") divided by the number of total negatives
+specificity <- cm$byClass['Specificity']
+
+# precision / positive prediction value: the number of correct positive values
+# ("Yes") divided by the number of predicted positives
+precision <- cm$byClass['Pos Pred Value']
+
+# f-score: a measure of accuracy calculated from the harmonic mean of precision
+# and recall
+f_score <- 2 * ((precision * recall) / (precision + recall))
+
+# print scoring metrics
+paste('Accuracy:', round(accuracy, 3))
+paste('Recall / Sensitivity:', round(recall, 3))
+paste('Specificity:', round(specificity, 3))
+paste('Precision:', round(precision, 3))
+paste('F-Score:', round(f_score, 3))
+
+# AUROC
+log.combine.preds %>%
+  yardstick::roc_auc(truth=fracture, probability.No)
+
+# ROC curve
+log.combine.preds %>%
+  group_by(dataset) %>%
+  roc_auc(truth=fracture, probability.No)
+
+typeof(log.interaction.preds.probs)
+
+typeof(test_df$fracture)
+
+ROCR.pred <- ROCR::prediction(log.interaction.preds.probs['Yes'], test_df$fracture)
+ROCR.full <- ROCR::performance(ROCR.pred, 'tpr', 'fpr')
+plot(ROCR.full, colorize=F, text.adj=c(-0.2, 1.7))
+```

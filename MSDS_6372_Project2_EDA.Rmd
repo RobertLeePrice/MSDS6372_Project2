@@ -1,0 +1,164 @@
+---
+title: "p2_intro_and_eda"
+output: html_document
+---
+
+```{r}
+library(aplore3)
+library(dplyr)
+library(ggplot2)
+library(GGally)
+library(car)
+library(PerformanceAnalytics)
+
+
+#
+#begin eda
+#
+gbm <- glow_bonemed
+
+#remove patient identifying info, assuming independence and no repeated measures
+myvars <- names(gbm) %in% c("sub_id", "site_id", "phy_id")
+gbm <- gbm[!myvars]
+
+#scatterplots colored by response
+plot(gbm)
+plot(gbm$age, gbm$height, col=gbm$fracture)
+plot(gbm$age, gbm$weight, col=gbm$fracture)
+plot(gbm$age, gbm$bmi, col=gbm$fracture)
+
+#right skewed
+hist(gbm$age)
+hist(gbm$fracscore)
+
+#normal
+hist(gbm$weight)
+hist(gbm$height)
+hist(gbm$bmi)
+hist(gbm$raterisk)
+
+summary(gbm)
+
+#
+#data cleanup
+#
+
+# convert factors to 1 (no), 2(yes) for easier plotting
+gbm$priorfrac <- as.integer(gbm$priorfrac)
+gbm$fracture <- as.integer(gbm$fracture)
+gbm$premeno <- as.integer(gbm$premeno)
+gbm$momfrac <- as.integer(gbm$momfrac)
+gbm$armassist  <- as.integer(gbm$armassist)
+gbm$smoke <- as.integer(gbm$smoke)
+gbm$raterisk <- as.integer(gbm$raterisk)
+gbm$bonemed <- as.integer(gbm$bonemed)
+gbm$bonemed_fu <- as.integer(gbm$bonemed_fu)
+gbm$bonetreat <- as.integer(gbm$bonetreat)
+
+#
+#box plots, bar plots, anova
+#
+
+#priorfrac statistically significant p-value < 0.0001
+ggplot(gbm, aes(y=priorfrac, fill=fracture)) + geom_bar() + facet_wrap(~fracture)
+summary(aov(fracture ~ priorfrac, data = gbm))
+
+#separate means for age p-value < 0.0001
+ggplot(gbm, aes(y=age, fill=fracture)) + geom_boxplot() + facet_wrap(~fracture)
+summary(aov(fracture ~ age, data = gbm))
+
+#weight not statistically significant
+ggplot(gbm, aes(y=weight, fill=fracture)) + geom_boxplot() + facet_wrap(~fracture)
+summary(aov(fracture ~ weight, data = gbm))
+
+#separate means for height p-value 0.00224
+ggplot(gbm, aes(y=height, fill=fracture)) + geom_boxplot() + facet_wrap(~fracture)
+summary(aov(fracture ~ height, data = gbm))
+
+#bmi not statistically significant
+ggplot(gbm, aes(y=bmi, fill=fracture)) + geom_boxplot() + facet_wrap(~fracture)
+summary(aov(fracture ~ bmi, data = gbm))
+
+#premeno not statistically significant
+ggplot(gbm, aes(y=premeno, fill=fracture)) + geom_bar() + facet_wrap(~fracture)
+model <- aov(fracture ~ as.factor(premeno), data = gbm)
+TukeyHSD(model, conf.level=.95)
+
+
+#momfrac statistically significant p-value 0.0173
+ggplot(gbm, aes(y=momfrac, fill=fracture)) + geom_bar() + facet_wrap(~fracture)
+model <- aov(fracture ~ as.factor(momfrac), data = gbm)
+TukeyHSD(model, conf.level=.95)
+
+#armassist statistically significant p-value = 0.0006
+ggplot(gbm, aes(y=armassist, fill=fracture)) + geom_bar() + facet_wrap(~fracture)
+model <- aov(fracture ~ as.factor(armassist), data = gbm)
+TukeyHSD(model, conf.level=.95)
+
+#smoke not statistically significant
+ggplot(gbm, aes(y=smoke, fill=fracture)) + geom_bar() + facet_wrap(~fracture)
+model <- aov(fracture ~ as.factor(smoke), data = gbm)
+TukeyHSD(model, conf.level=.95)
+
+#raterisk statistically significant p-value = 0.002 for 3-1
+ggplot(gbm, aes(y=raterisk, fill=fracture)) + geom_bar() + facet_wrap(~fracture)
+model <- aov(fracture ~ as.factor(raterisk), data = gbm)
+TukeyHSD(model, conf.level=.95)
+
+#separate means for fracscore statistically significant p-value < 0.0001
+ggplot(gbm, aes(y=fracscore, fill=fracture)) + geom_boxplot() + facet_wrap(~fracture)
+summary(aov(fracture ~ fracscore, data = gbm))
+
+#bonemed statistically significant p-value = 0.0011
+ggplot(gbm, aes(y=bonemed, fill=fracture)) + geom_bar() + facet_wrap(~fracture)
+model <- aov(fracture ~ as.factor(bonemed), data = gbm)
+TukeyHSD(model, conf.level=.95)
+
+#bonemed_fu statistically significant p-value < 0.0001
+ggplot(gbm, aes(y=bonemed_fu, fill=fracture)) + geom_bar() + facet_wrap(~fracture)
+model <- aov(fracture ~ as.factor(bonemed_fu), data = gbm)
+TukeyHSD(model, conf.level=.95)
+
+#bonetreat statistically significant p-value = 0.0106
+ggplot(gbm, aes(y=bonetreat, fill=fracture)) + geom_bar() + facet_wrap(~fracture)
+model <- aov(fracture ~ as.factor(bonetreat), data = gbm)
+TukeyHSD(model, conf.level=.95)
+
+#some standard deviation metrics
+sd(gbm$priorfrac)
+sd(gbm$age)
+sd(gbm$weight)
+sd(gbm$height)
+sd(gbm$bmi)
+sd(gbm$priorfrac)
+sd(gbm$premeno)
+sd(gbm$momfrac)
+sd(gbm$armassist)
+sd(gbm$smoke)
+sd(gbm$raterisk)
+sd(gbm$fracscore)
+sd(gbm$bonemed)
+sd(gbm$bonemed_fu)
+sd(gbm$bonetreat)
+
+#inspect simple linear model for collinearity
+vif(lm(fracture~., data=gbm))
+
+#inspect scatters histograms and correlation 
+att <- select(gbm, c('fracture', 'age', 'weight', 'height','bmi'))
+chart.Correlation(att, histogram=TRUE, pch=19)
+
+att <- select(gbm, c('fracture', 'priorfrac', 'premeno', 'momfrac', 'armassist'))
+chart.Correlation(att, histogram=TRUE, pch=19)
+  
+att <- select(gbm, c('fracture', 'smoke', 'raterisk', 'fracscore'))
+chart.Correlation(att, histogram=TRUE, pch=19)
+
+#bonemed, bonemed_fu, bonetreat are highly correlated
+att <- select(gbm, c('fracture', 'bonemed', 'bonemed_fu', 'bonetreat'))
+chart.Correlation(att, histogram=TRUE, pch=19)
+
+#visualize 
+ggpairs(gbm,columns=1:8,aes(colour=as.factor(fracture)))
+ggpairs(gbm,columns=9:15,aes(colour=as.factor(fracture)))
+```
